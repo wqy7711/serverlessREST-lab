@@ -1,14 +1,14 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 const ddbDocClient = createDDbDocClient();
 
-export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {     // Note change
+export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {
   try {
     console.log("[EVENT]", JSON.stringify(event));
-    const pathParameters  = event?.pathParameters;
+
+    const pathParameters = event?.pathParameters;
     const movieId = pathParameters?.movieId ? parseInt(pathParameters.movieId) : undefined;
 
     if (!movieId) {
@@ -27,7 +27,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {    
         Key: { id: movieId },
       })
     );
+
     console.log("GetCommand response: ", commandOutput);
+
     if (!commandOutput.Item) {
       return {
         statusCode: 404,
@@ -37,11 +39,33 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {    
         body: JSON.stringify({ Message: "Invalid movie Id" }),
       };
     }
-    const body = {
+
+    let body: { data: Record<string, any>; cast?: any[] } = {
       data: commandOutput.Item,
     };
 
-    // Return Response
+    const castQuery = event.queryStringParameters?.cast;
+    if (castQuery === "true") {
+      console.log(`Fetching cast for movie ID: ${movieId}`);
+
+      const castResult = await ddbDocClient.send(
+        new QueryCommand({
+          TableName: process.env.CAST_TABLE_NAME,
+          KeyConditionExpression: "movieId = :m",
+          ExpressionAttributeValues: {
+            ":m": movieId,
+          },
+        })
+      );
+
+      console.log("Cast Query Response:", castResult);
+
+      body = {
+        ...body,
+        cast: castResult.Items || [],
+      };
+    }
+
     return {
       statusCode: 200,
       headers: {
@@ -50,7 +74,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {    
       body: JSON.stringify(body),
     };
   } catch (error: any) {
-    console.log(JSON.stringify(error));
+    console.error("[ERROR]", JSON.stringify(error));
     return {
       statusCode: 500,
       headers: {
@@ -63,14 +87,5 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {    
 
 function createDDbDocClient() {
   const ddbClient = new DynamoDBClient({ region: process.env.REGION });
-  const marshallOptions = {
-    convertEmptyValues: true,
-    removeUndefinedValues: true,
-    convertClassInstanceToMap: true,
-  };
-  const unmarshallOptions = {
-    wrapNumbers: false,
-  };
-  const translateConfig = { marshallOptions, unmarshallOptions };
-  return DynamoDBDocumentClient.from(ddbClient, translateConfig);
+  return DynamoDBDocumentClient.from(ddbClient);
 }
